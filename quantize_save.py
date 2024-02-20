@@ -27,7 +27,7 @@ from transformers import (
 )
 
 from peft import LoftQConfig, LoraConfig, TaskType, get_peft_model
-from safetensors import save_open
+from safetensors import safe_open
 
 
 class Shell(nn.Module):

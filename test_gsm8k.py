@@ -60,6 +60,10 @@ class ModelArguments:
         default=512,
         metadata={"help": "Maximum sequence length. Sequences will be left padded (and possibly truncated)."},
     )
+    zero_shot: bool = field(
+        default=False,
+        metadata={"help": "Whether to use zero-shot model."},
+    )
 
 
 @dataclass
@@ -117,20 +121,23 @@ def evaluation(model_args, data_args):
     ##########################
     #       Peft Model       #
     ##########################
-    if model_args.adapter_name_or_path is not None:
-        model = PeftModel.from_pretrained(model,
-                                          model_args.adapter_name_or_path,
-                                          is_trainable=False,
-                                          token=model_args.token,
-                                          )
-    else:
-        model = PeftModel.from_pretrained(model,
-                                          model_args.model_name_or_path,
-                                          subfolder='gsm8k',
-                                          is_trainable=False,
-                                          token=model_args.token,
-                                          )
+    
+    model = PeftModel.from_pretrained(model,
+                                        model_args.adapter_name_or_path,
+                                        is_trainable=False,
+                                        token=model_args.token,
+                                        )
+
     model = model.to('cuda')
+    print(model)
+
+    if model_args.zero_shot:
+        # unload the adapter, only use the original models
+        print('clearing LoRA')
+        for name, param in model.named_parameters():
+            if "lora" in name:
+                # set all the LoRA parameters to zero
+                param.data.zero_()
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
