@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from transformers import Trainer
 from gact.controller import Controller
 
+import peft
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 from datasets import load_dataset
 
@@ -70,6 +71,14 @@ class ModelArguments:
     gact_level: str = field(
         default="L1",
         metadata={"help": "GACT level."},
+    )
+    gradient_checkpointing_enable: bool = field(
+        default=False,
+        metadata={"help": "True: Use gradient checkpointing; False: Do not use gradient checkpointing"},
+    )
+    flash_attention: bool = field(
+        default=False,
+        metadata={"help": "True: Use Flash Attention; False: Do not use Flash Attention"},
     )
 
 
@@ -252,6 +261,7 @@ def train():
             low_cpu_mem_usage=True,
             torch_dtype=torch.bfloat16,
             token=model_args.token,
+            attn_implementation="flash_attention_2" if model_args.flash_attention else "eager",
         )
     else:
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -259,13 +269,19 @@ def train():
             low_cpu_mem_usage=True,
             torch_dtype=torch.bfloat16,
             token=model_args.token,
+            use_cache=False if model_args.gradient_checkpointing_enable else True,
             quantization_config=transformers.BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=False,
+                bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type='nf4',
             ),
+            attn_implementation="flash_attention_2" if model_args.flash_attention else "eager",
         )
+        model = peft.prepare_model_for_kbit_training(model, use_gradient_checkpointing=model_args.gradient_checkpointing_enable, gradient_checkpointing_kwargs={"use_reentrant": False})
+        if (model_args.gradient_checkpointing_enable):
+            print("Gradient Checkpointing is enabled")
+    
     ##########################
     #       Peft Model       #
     ##########################
@@ -295,7 +311,7 @@ def train():
                                           is_trainable=True,
                                           token=model_args.token,
                                           )
-    
+    print(model)
     # enable gact
     gact.set_optimization_level(model_args.gact_level)
     controller = Controller(model)

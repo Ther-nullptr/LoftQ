@@ -11,7 +11,7 @@ import transformers
 from torch.utils.data import Dataset
 from transformers import Trainer
 
-
+import peft
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 from datasets import load_dataset
 
@@ -218,10 +218,11 @@ def train():
             quantization_config=transformers.BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=False,
+                bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type='nf4',
             ),
         )
+        model = peft.prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
     ##########################
     #       Peft Model       #
     ##########################
