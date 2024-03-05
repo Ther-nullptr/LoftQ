@@ -252,6 +252,8 @@ def train():
                                           is_trainable=True,
                                           token=model_args.token,
                                           )
+        
+    # change the model's modules
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,

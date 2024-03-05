@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence
+from enum import Enum
 
 import gact
 import torch
@@ -16,18 +17,15 @@ import peft
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 from datasets import load_dataset
 
-from gact.controller import Controller
 from gact.efficient_linear import EfficientMemoryLinear
 from gact.efficient_silu import EfficientMemorySiLU
 from gact.efficient_rmsnorm import EfficientMemoryRMSNorm
 from gact.efficient_softmax import EfficientMemorySoftmax
 from gact.efficient_dropout import EfficientMemoryDropout
+from gact.utils import get_memory_usage, get_weight_memory, get_gradient_memory, get_optimizer_memory, exp_recorder
+from gact.flops_ops import ModuleFLOPs_Linear, ModuleFLOPs_Norm, ModuleFLOPs_GELU, ModuleFLOPs_QK, ModuleFLOPs_OV, MethodFLOPs_softmax_from_Q
 
 from transformers.models.mistral.modeling_mistral import MistralRMSNorm
-
-import os
-os.environ["WANDB_PROJECT"]="gsm8k"
-
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "[PAD]"
@@ -91,6 +89,14 @@ class ModelArguments:
         default=False,
         metadata={"help": "True: Use Flash Attention; False: Do not use Flash Attention"},
     )
+    get_mem: bool = field(
+        default=False,
+        metadata={"help": "True: Get memory usage; False: Do not get memory usage"},
+    )
+    get_macs: bool = field(
+        default=False,
+        metadata={"help": "True: Get MACs; False: Do not get MACs"},
+    )
     linear_mode: str = field(
         default="NAIVE",
         metadata={"help": "Linear mode."},
@@ -114,6 +120,14 @@ class ModelArguments:
     nonlinear_quantization_shape: int = field(
         default=16,
         metadata={"help": "NonLinear quantization shape."},
+    )
+    get_mem: bool = field(
+        default=True,
+        metadata={"help": "True: Get memory usage; False: Do not get memory usage"},
+    )
+    get_macs: bool = field(
+        default=False,
+        metadata={"help": "True: Get MACs; False: Do not get MACs"},
     )
 
 
@@ -139,14 +153,206 @@ class TrainingArguments(transformers.TrainingArguments):
     )
 
 
+class Summary(Enum):
+    NONE = 0
+    AVERAGE = 1
+    SUM = 2
+    COUNT = 3
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self, name, fmt=':f', summary_type=Summary.AVERAGE):
+        self.name = name
+        self.fmt = fmt
+        self.summary_type = summary_type
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+    def get_value(self):
+        if self.summary_type is Summary.AVERAGE:
+            return self.avg
+        if self.summary_type is Summary.SUM:
+            return self.sum
+        if self.summary_type is Summary.COUNT:
+            return self.sum
+
+    def __str__(self):
+        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        return fmtstr.format(**self.__dict__)
+
+    def summary(self):
+        fmtstr = ''
+        if self.summary_type is Summary.NONE:
+            fmtstr = ''
+        elif self.summary_type is Summary.AVERAGE:
+            fmtstr = '{name} {avg:.3f}'
+        elif self.summary_type is Summary.SUM:
+            fmtstr = '{name} {sum:.3f}'
+        elif self.summary_type is Summary.COUNT:
+            fmtstr = '{name} {count:.3f}'
+        else:
+            raise ValueError('invalid summary type %r' % self.summary_type)
+
+        return fmtstr.format(**self.__dict__)
+
+total_flops = 0
+total_flops_intensity = 0
+total_forward_flops = 0
+total_backward_flops = 0
+
 class GACTTrainer(Trainer):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, get_mem, get_macs, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.begin = False
         self.step = 0
+        self.total_mem = AverageMeter('Total Memory', ':.4e')
+        self.peak_mem = AverageMeter('Peak Memory', ':.4e')
+        self.activation_mem = AverageMeter('Activation Memory', ':.4e')
+        self.get_mem = get_mem
+        self.get_macs = get_macs
         
     def compute_loss(self, model, inputs, return_outputs=False):
+        self.step += 1
+
+        if self.get_mem and self.step > 1:
+            torch.cuda.synchronize()
+            # accelerator.print("===============After Data Loading=======================")
+            init_mem = get_memory_usage(False)  # model size + data size
+            torch.cuda.reset_peak_memory_stats()
+
+        if self.get_macs:
+            def flops_forward_hook(module, inputs, outputs):
+                global total_flops, total_flops_intensity, total_forward_flops, total_backward_flops
+                class_type = module.__class__.__name__
+                # # only for debug
+                # print(f"forward: {module.name}, {module.__class__.__name__}")
+
+                if class_type == 'Linear': # y = x @ W + b, (B,M,K) @ (K,N) + (N,) = (B,M,N)
+                    if ("base_layer" not in module.name):
+                        flops = ModuleFLOPs_Linear(module, outputs, inputs[0])
+                        total_flops += flops
+                        total_forward_flops += flops
+                        module.flops = flops # save the flops for backward
+
+                elif class_type == 'MistralRMSNorm':
+                    flops = ModuleFLOPs_Norm(module, outputs, inputs[0])
+                    total_flops += flops
+                    total_forward_flops += flops
+                    module.flops = flops
+
+                elif class_type == 'SiLU': # GELU, usually used in BERT type models
+                    flops = ModuleFLOPs_GELU(module, outputs, inputs[0])
+                    total_flops += flops
+                    total_forward_flops += flops
+                    module.flops = flops
+
+                if 'q_proj' in module.name: # specially for (Q @ K.T) @ V
+                    # Q @ K
+                    flops = ModuleFLOPs_QK(outputs)
+                    # softmax
+                    flops += MethodFLOPs_softmax_from_Q(outputs)
+                    # O @ V
+                    flops += ModuleFLOPs_OV(outputs)
+                    total_flops += flops
+                    total_forward_flops += flops
+                    module.attn_out_shape = outputs.shape
+            
+            
+            def flops_backward_hook(module, grad_input, grad_output):
+                global total_flops, total_flops_intensity, total_forward_flops, total_backward_flops
+                class_type = module.__class__.__name__
+                # # only for debug
+                # print(f"backward: {module.name}, {module.__class__.__name__}")
+
+                if class_type == 'Linear':
+                    # compute gradient of activation
+                    if ("base_layer" not in module.name): 
+                        flops = module.flops
+                        total_flops += flops
+                        total_backward_flops += flops
+
+                        # compute gradient of weight
+                        if module.weight.requires_grad:
+                            total_flops += flops
+                            total_backward_flops += flops
+
+                elif class_type == 'MistralRMSNorm': # TODO: norm and activation function just copy their forward, but this is not accurate!
+                    flops = module.flops
+                    total_flops += flops
+                    total_backward_flops += flops
+
+                elif class_type == 'GELUActivation' or class_type == 'SiLU':
+                    flops = module.flops
+                    total_flops += flops
+                    total_backward_flops += flops
+
+                if 'q_proj' in module.name:
+                    # before: 2 (b, s, h) @ (b, h, s)
+                    # after: 4 (b, s, h) @ (b, h, s) + 2 (b, s, s) @ (b, s, s)
+                    attn_out_shape = module.attn_out_shape # (b, s, h)
+                    b, s, h = attn_out_shape
+                    flops = 2 * (4 * b * s * h * s + 2 * b * s * s * s)
+                    total_flops += flops
+                    total_backward_flops += flops
+
+            # register forward hook
+            for name, module in model.named_modules():
+                module.name = name
+                module.register_forward_hook(flops_forward_hook)
+                module.register_backward_hook(flops_backward_hook)
+
+            loss = super().compute_loss(model, inputs, return_outputs)
+            loss.backward()
+
+            print(f"Total FLOPs: {total_flops / 10**12} TFLOPs")
+            print(f"Total Forward FLOPs: {total_forward_flops / 10**12} TFLOPs")
+            print(f"Total Backward FLOPs: {total_backward_flops / 10**12} TFLOPs")
+
+            exit()
+
         loss = super().compute_loss(model, inputs, return_outputs)
+        
+        if self.get_mem and self.step > 1:
+            torch.cuda.synchronize()
+            before_backward = get_memory_usage(True)
+        
+            loss.backward()
+            torch.utils.checkpoint.first_iter = False
+
+            torch.cuda.synchronize()
+            for t in inputs:
+                del t
+            after_backward = get_memory_usage(False)
+
+            self.total_mem.update(before_backward)
+            self.activation_mem.update(before_backward - after_backward)
+            self.peak_mem.update(
+                torch.cuda.max_memory_allocated()
+            )
+
+            print("peak %d MB" % (self.peak_mem.get_value() / 1024 / 1024))
+            print("total %d MB" % (self.total_mem.get_value() / 1024 / 1024))
+            print("activation %d MB" % (self.activation_mem.get_value() / 1024 / 1024))
+            
+            print("weight %d MB" % (get_weight_memory(model) / 1024 / 1024))
+            print("gradient %d MB" % (get_gradient_memory(model) / 1024 / 1024))
+            print("optimizer %d MB" % (get_optimizer_memory(self.optimizer) / 1024 / 1024))
+            print('-------------------------------------------------')
+            exit(0)
+
         return loss
 
 
@@ -389,7 +595,7 @@ def train():
                                           is_trainable=True,
                                           token=model_args.token,
                                           )
-
+        
     # replace the module
     replace_module(model, compress_config)
     print(model)
@@ -427,10 +633,8 @@ def train():
         f"lr_{training_args.learning_rate}",
         f"seed_{training_args.seed}",
     )
-    trainer = GACTTrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = GACTTrainer(get_mem=model_args.get_mem, get_macs=model_args.get_macs, model=model, tokenizer=tokenizer, args=training_args, **data_module)
     trainer.train()
-    trainer.save_state()
-    trainer.save_model(output_dir=training_args.output_dir)
 
 
 if __name__ == "__main__":
