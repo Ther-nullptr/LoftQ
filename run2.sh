@@ -1,5 +1,5 @@
 # finetune
-tag=JPEG_JPEG_8
+tag=WALSH_1D_NAIVE
 exp_name=gsm8k_mistral_7b_4bit_64rank_loftq_${tag}
 python -u train_gsm8k_gact.py \
     --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/Mistral-7B-v0.1-4bit-16rank \
@@ -18,9 +18,10 @@ python -u train_gsm8k_gact.py \
     --logging_steps 10 \
     --do_train \
     --report_to wandb \
-    --linear_mode JPEG \
-    --nonlinear_mode JPEG \
-    --nonlinear_quantization_shape 8
+    --linear_mode DCT \
+    --linear_quality 75 \
+    --nonlinear_mode NAIVE \
+    --nonlinear_quantization_shape 16
 
 # # # # # test
 python test_gsm8k.py \

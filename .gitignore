@@ -170,3 +170,5 @@ Llama-2-7b-hf-4bit-64rank/
 exp_results/
 
 wandb/
+output/
+pic/

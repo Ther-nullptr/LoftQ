@@ -303,7 +303,7 @@ def replace_module(module, compress_config):
                 eps=child.variance_epsilon,
                 elementwise_affine=True,
                 bias=False,
-                compress_type=compress_config['nonlinear']['mode'],
+                compress_type='NAIVE',
                 compress_quality=compress_config['nonlinear']['quality'],
                 quantization_shape=compress_config['nonlinear']['quantization_shape']
             )
