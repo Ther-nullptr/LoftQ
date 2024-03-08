@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
 import torchvision
-from gact.memory_efficient_function import per_block_quantization, jpeg_compression_for_compress
+from gact.memory_efficient_function import per_block_quantization, jpeg_compression_for_compress, dct_compression_for_compress
 
 ZRL = '11111111001'
 EOB = '1010'
@@ -96,10 +96,10 @@ def encode(quantized_dct_code):
 
 if __name__ == '__main__':
   dir = 'output'
-  pt_files = [f for f in os.listdir(dir) if f.endswith('.pt')]
+  pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'layernorm' in f]
   for pt_file in pt_files:
     print(pt_file)
-    quant_shape = 64 if 'lora_A' in pt_file else 16
+    quant_shape = 64
     tensor = torch.load(f'{dir}/{pt_file}').cpu().detach()
     
     input_shape = tensor.shape
@@ -107,8 +107,8 @@ if __name__ == '__main__':
     # split the last dimension into 64
     group_shape = input_shape[:-2] + (input_shape[-2] // 64, 64, input_shape[-1] // 64, 64)
 
-    jpeg_processor = JPEGProcessor(quality=75)
-    x, original_x = jpeg_compression_for_compress(x, input_shape, jpeg_processor, quant_shape)
+    dct_processor = DCTProcessor(quality=75)
+    x, original_x = dct_compression_for_compress(x, input_shape, dct_processor, quant_shape)
 
     x = x.view(group_shape).permute(0, 1, 3, 2, 4).reshape(-1, 64, 64)
     original_x = original_x.view(group_shape).permute(0, 1, 3, 2, 4).reshape(-1, 64, 64)
@@ -119,9 +119,9 @@ if __name__ == '__main__':
       plt.figure()
       sns.heatmap(torch.abs(x[i]), cmap='viridis')
       plt.title(f'{pt_file}_{i}')
-      plt.savefig(f'pic/{pt_file}_{i}.png')
+      plt.savefig(f'pic/dct_{pt_file}_{i}.png')
 
       plt.figure()
       sns.heatmap(torch.abs(original_x[i]), cmap='viridis')
       plt.title(f'{pt_file}_{i}_original')
-      plt.savefig(f'pic/{pt_file}_{i}_original.png')
+      plt.savefig(f'pic/dct_{pt_file}_{i}_original.png')
