@@ -163,6 +163,10 @@ def quantize_and_save():
         loftq_config=loftq_config,
     )
 
+    # record the layer's name
+    for name, module in model.named_modules():
+        module.name = name
+
     # Obtain LoftQ model
     lora_model = get_peft_model(model, lora_config)
     base_model = lora_model.get_base_model()

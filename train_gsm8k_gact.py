@@ -22,8 +22,11 @@ from gact.efficient_silu import EfficientMemorySiLU
 from gact.efficient_rmsnorm import EfficientMemoryRMSNorm
 from gact.efficient_softmax import EfficientMemorySoftmax
 from gact.efficient_dropout import EfficientMemoryDropout
+from gact.efficient_hadamard import EfficientMemoryHadamard
+from gact.efficient_gemm import EfficientMemoryGEMM
+from gact.efficient_flashattention import EfficientMemoryFlashAttention
 
-from transformers.models.mistral.modeling_mistral import MistralRMSNorm
+from transformers.models.mistral.modeling_mistral import MistralRMSNorm, MistralGEMM, MistralHadamard
 
 import os
 os.environ["WANDB_PROJECT"]="gsm8k"
@@ -100,20 +103,80 @@ class ModelArguments:
         metadata={"help": "Linear quality."},
     )
     linear_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "Linear quantization shape."},
     )
-    nonlinear_mode: str = field(
+    silu_mode: str = field(
         default="NAIVE",
-        metadata={"help": "NonLinear mode."},
+        metadata={"help": "SiLU mode."},
     )
-    nonlinear_quality: int = field(
+    silu_quality: int = field(
         default=75,
-        metadata={"help": "NonLinear quality."},
+        metadata={"help": "SiLU quality."},
     )
-    nonlinear_quantization_shape: int = field(
+    silu_quantization_shape: int = field(
+        default=64,
+        metadata={"help": "SiLU quantization shape."},
+    )
+    layernorm_mode: str = field(
+        default="NAIVE",
+        metadata={"help": "layernorm mode."},
+    )
+    layernorm_quality: int = field(
+        default=75,
+        metadata={"help": "layernorm quality."},
+    )
+    layernorm_quantization_shape: int = field(
         default=16,
-        metadata={"help": "NonLinear quantization shape."},
+        metadata={"help": "layernorm quantization shape."},
+    )
+    layernorm_use_4bit: bool = field(
+        default=False,
+        metadata={"help": "use 4bit quantization."},
+    )
+    softmax_mode: str = field(
+        default="NAIVE",
+        metadata={"help": "softmax mode."},
+    )
+    softmax_quality: int = field(
+        default=75,
+        metadata={"help": "softmax quality."},
+    )
+    softmax_quantization_shape: int = field(
+        default=64,
+        metadata={"help": "softmax quantization shape."},
+    )
+    softmax_pruning: bool = field(
+        default=False,
+        metadata={"help": "softmax pruning."},
+    )
+    softmax_pruning_val: int = field(
+        default=-100,
+        metadata={"help": "softmax pruning val."},
+    )
+    gemm_mode: str = field(
+        default="NAIVE",
+        metadata={"help": "gemm mode."},
+    )
+    gemm_quality: int = field(
+        default=75,
+        metadata={"help": "gemm quality."},
+    )
+    gemm_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "gemm quantization shape."},
+    )
+    hadamard_mode: str = field(
+        default="NAIVE",
+        metadata={"help": "hadamard mode."},
+    )
+    hadamard_quality: int = field(
+        default=75,
+        metadata={"help": "hadamard quality."},
+    )
+    hadamard_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "hadamard quantization shape."},
     )
 
 
@@ -295,7 +358,7 @@ def replace_module(module, compress_config):
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
         elif isinstance(child, torch.nn.SiLU):
-            setattr(module, name, EfficientMemorySiLU(compress_type=compress_config['nonlinear']['mode'], compress_quality=compress_config['nonlinear']['quality'], quantization_shape=compress_config['nonlinear']['quantization_shape']))
+            setattr(module, name, EfficientMemorySiLU(compress_type=compress_config['silu']['mode'], compress_quality=compress_config['silu']['quality'], quantization_shape=compress_config['silu']['quantization_shape']))
         elif isinstance(child, MistralRMSNorm):
             original_weight_data = child.weight.data
             new_child = EfficientMemoryRMSNorm(
@@ -303,16 +366,39 @@ def replace_module(module, compress_config):
                 eps=child.variance_epsilon,
                 elementwise_affine=True,
                 bias=False,
-                compress_type='NAIVE',
-                compress_quality=compress_config['nonlinear']['quality'],
-                quantization_shape=compress_config['nonlinear']['quantization_shape']
+                compress_type=compress_config['layernorm']['mode'],
+                compress_quality=compress_config['layernorm']['quality'],
+                quantization_shape=compress_config['layernorm']['quantization_shape'],
+                use_4bit=compress_config['layernorm']['use_4bit']
             )
             new_child.weight.data = original_weight_data
             setattr(module, name, new_child)
         elif isinstance(child, torch.nn.Softmax):
-            setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['nonlinear']['mode'], compress_quality=compress_config['nonlinear']['quality'], quantization_shape=compress_config['nonlinear']['quantization_shape']))
+            new_child = EfficientMemorySoftmax(
+                -1,
+                compress_type=compress_config['softmax']['mode'], 
+                compress_quality=compress_config['softmax']['quality'], 
+                quantization_shape=compress_config['softmax']['quantization_shape'],
+                pruning=compress_config['softmax']['softmax_pruning'],
+                pruning_val=compress_config['softmax']['softmax_pruning_val']
+            )
+            setattr(module, name, new_child)
         elif isinstance(child, torch.nn.Dropout):
             setattr(module, name, EfficientMemoryDropout(child.p))
+        elif isinstance(child, MistralHadamard):
+            new_child = EfficientMemoryHadamard(
+                compress_type=compress_config['hadamard']['mode'], 
+                compress_quality=compress_config['hadamard']['quality'], 
+                quantization_shape=compress_config['hadamard']['quantization_shape'],
+            )
+            setattr(module, name, new_child)
+        elif isinstance(child, MistralGEMM):
+            new_child = EfficientMemoryGEMM(
+                compress_type=compress_config['gemm']['mode'], 
+                compress_quality=compress_config['gemm']['quality'], 
+                quantization_shape=compress_config['gemm']['quantization_shape'],
+            )
+            setattr(module, name, new_child)
         else:
             replace_module(child, compress_config)
 
@@ -326,11 +412,34 @@ def train():
             'mode': model_args.linear_mode,
             'quality': model_args.linear_quality
         },
-        'nonlinear': {
-            'mode': model_args.nonlinear_mode,
-            'quality': model_args.nonlinear_quality,
-            'quantization_shape': model_args.nonlinear_quantization_shape
+        'silu': {
+            'mode': model_args.silu_mode,
+            'quality': model_args.silu_quality,
+            'quantization_shape': model_args.silu_quantization_shape
         },
+        'layernorm': {
+            'mode': model_args.layernorm_mode,
+            'quality': model_args.layernorm_quality,
+            'quantization_shape': model_args.layernorm_quantization_shape,
+            'use_4bit': model_args.layernorm_use_4bit
+        },
+        'softmax': {
+            'mode': model_args.softmax_mode,
+            'quality': model_args.softmax_quality,
+            'quantization_shape': model_args.softmax_quantization_shape,
+            'softmax_pruning': model_args.softmax_pruning,
+            'softmax_pruning_val': model_args.softmax_pruning_val
+        },
+        'gemm': {
+            'mode': model_args.gemm_mode,
+            'quality': model_args.gemm_quality,
+            'quantization_shape': model_args.gemm_quantization_shape
+        },
+        'hadamard': {
+            'mode': model_args.hadamard_mode,
+            'quality': model_args.hadamard_quality,
+            'quantization_shape': model_args.hadamard_quantization_shape
+        }
     }
 
     if model_args.full_precision:
@@ -399,7 +508,7 @@ def train():
         token=model_args.token,
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
-        padding_side="right",
+        padding_side="left",
         use_fast=False,
     )
     special_tokens_dict = dict()

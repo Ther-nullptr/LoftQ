@@ -110,9 +110,9 @@ if __name__ == '__main__':
     group_shape = input_shape[:-2] + (input_shape[-2] // quant_shape, quant_shape, input_shape[-1] // quant_shape, quant_shape)
     pic = x.view(group_shape).permute(0, 1, 3, 2, 4).reshape(-1, quant_shape, quant_shape)
 
-    # jpeg_processor = JPEGProcessor(quality=quality)
+    jpeg_processor = JPEGProcessor(quality=quality)
     dct_processor = DCTProcessor(quality=quality, interpolation=1)
-    # x_jpeg, original_x_jpeg = jpeg_compression_for_compress(x, input_shape, jpeg_processor, quant_shape)
+    x_jpeg, original_x_jpeg = jpeg_compression_for_compress(x, input_shape, jpeg_processor, quant_shape)
     x_dct, original_x_dct = dct_compression_for_compress(x, input_shape, dct_processor, quant_shape)
 
     # x_jpeg = x_jpeg.view(group_shape).permute(0, 1, 3, 2, 4).reshape(-1, quant_shape, quant_shape)

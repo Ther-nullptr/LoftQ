@@ -172,3 +172,4 @@ exp_results/
 wandb/
 output/
 pic/
+log/

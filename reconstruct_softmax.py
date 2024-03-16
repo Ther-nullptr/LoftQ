@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
 import torchvision
-from gact.memory_efficient_function import per_block_quantization, jpeg_compression_cpu
+from gact.memory_efficient_function import per_block_quantization, jpeg_compression_cpu, dct_compression_cpu
 
 ZRL = '11111111001'
 EOB = '1010'
@@ -97,21 +97,22 @@ def encode(quantized_dct_code, quant_shape):
 if __name__ == '__main__':
   quality = 75
   dir = 'output'
-  pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'lora' in f]
+  pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'softmax' in f]
   for pt_file in pt_files:
     print(pt_file)
     quant_shape = 64
-    tensor = torch.load(f'{dir}/{pt_file}').cpu().detach()
+    tensor = torch.softmax(torch.load(f'{dir}/{pt_file}'), dim=-1)[0].cpu().detach()
     
     input_shape = tensor.shape
+
     x, quant_state = per_block_quantization(tensor, input_shape, quant_shape)
     # split the last dimension into 64
     group_shape = input_shape[:-2] + (input_shape[-2] // quant_shape, quant_shape, input_shape[-1] // quant_shape, quant_shape)
 
-    jpeg_processor = JPEGProcessor(quality=quality)
+    jpeg_processor = DCTProcessor(quality=quality)
 
     original_x = x
-    x = jpeg_compression_cpu(x, input_shape, jpeg_processor, quant_shape)
+    x = dct_compression_cpu(x, input_shape, jpeg_processor, quant_shape)
 
     x = x.view(group_shape).permute(0, 1, 3, 2, 4).reshape(-1, quant_shape, quant_shape)
     original_x = original_x.view(group_shape).view(-1, 64, 64)
@@ -140,7 +141,4 @@ if __name__ == '__main__':
 
     psnr = 10 * torch.log10(255**2 / (total_mse / x.shape[0]))
     print(psnr)
-      
-
-    
     
