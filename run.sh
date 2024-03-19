@@ -1,8 +1,8 @@
 # finetune
-tag=NORMAL_2bit_lr
-exp_name=gsm8k_mistral_7b_2bit_64rank_loftq_${tag}
+tag=OPT
+exp_name=gsm8k_opt_7b_4bit_64rank_loftq_${tag}
 python -u train_gsm8k_gact.py \
-    --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/llama-4bit-16rank \
+    --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/opt-6.7b-4bit-16rank \
     --learning_rate 3e-4 \
     --seed 11 \
     --expt_name $exp_name \
@@ -19,17 +19,19 @@ python -u train_gsm8k_gact.py \
     --do_train \
     --report_to wandb \
     --linear_mode NONE \
-    --linear_quality 30 \
+    --linear_quality 75 \
     --silu_mode NONE \
     --silu_quality 75 \
     --layernorm_mode NONE \
     --layernorm_quality 75 \
     --layernorm_quantization_shape 16 \
     --softmax_mode NONE \
-    --softmax_quality 75 
-
-# # # # # test
-python test_gsm8k.py \
-    --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/Mistral-7B-v0.1-4bit-16rank \
-    --adapter_name_or_path /home/yujin-wa20/projects/LoftQ/exp_results/gsm8k_mistral_7b_4bit_64rank_loftq_LINEAR_SILU_DCT_50/gsm8k_mistral_7b_4bit_64rank_loftq_LINEAR_SILU_DCT_50/Mistral-7B-v0.1-4bit-16rank/ep_6/lr_0.0003/seed_11 \
-    --batch_size 64
+    --softmax_quantization_shape 16 \
+    --softmax_quality 75 \
+    --gemm_mode NONE \
+    --gemm_quality 75 \
+    --gemm_quantization_shape 64 \
+    --softmax_pruning \
+    --hadamard_mode NONE \
+    --hadamard_quality 75 \
+    --hadamard_quantization_shape 64

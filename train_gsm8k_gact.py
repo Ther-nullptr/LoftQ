@@ -25,8 +25,10 @@ from gact.efficient_dropout import EfficientMemoryDropout
 from gact.efficient_hadamard import EfficientMemoryHadamard
 from gact.efficient_gemm import EfficientMemoryGEMM
 from gact.efficient_flashattention import EfficientMemoryFlashAttention
+from gact.fwd_silu_bwd_relu import ForwardSiLUBackwardReLU
 
 from transformers.models.mistral.modeling_mistral import MistralRMSNorm, MistralGEMM, MistralHadamard
+from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaGEMM, LlamaHadamard
 
 import os
 os.environ["WANDB_PROJECT"]="gsm8k"
@@ -177,6 +179,10 @@ class ModelArguments:
     hadamard_quantization_shape: int = field(
         default=16,
         metadata={"help": "hadamard quantization shape."},
+    )
+    relu_replace: bool = field(
+        default=False,
+        metadata={"help": "replace all silu to relu"}
     )
 
 
@@ -341,7 +347,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
 
 
-def replace_module(module, compress_config):
+def replace_module(module, compress_config, replace_to_relu):
     for name, child in module.named_children():
         if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
             original_weight_data = child.weight.data
@@ -358,8 +364,11 @@ def replace_module(module, compress_config):
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
         elif isinstance(child, torch.nn.SiLU):
-            setattr(module, name, EfficientMemorySiLU(compress_type=compress_config['silu']['mode'], compress_quality=compress_config['silu']['quality'], quantization_shape=compress_config['silu']['quantization_shape']))
-        elif isinstance(child, MistralRMSNorm):
+            if replace_to_relu:
+                setattr(module, name, ForwardSiLUBackwardReLU())
+            else:
+                setattr(module, name, EfficientMemorySiLU(compress_type=compress_config['silu']['mode'], compress_quality=compress_config['silu']['quality'], quantization_shape=compress_config['silu']['quantization_shape']))
+        elif isinstance(child, (MistralRMSNorm, LlamaRMSNorm)):
             original_weight_data = child.weight.data
             new_child = EfficientMemoryRMSNorm(
                 normalized_shape=child.weight.data.shape,
@@ -385,22 +394,23 @@ def replace_module(module, compress_config):
             setattr(module, name, new_child)
         elif isinstance(child, torch.nn.Dropout):
             setattr(module, name, EfficientMemoryDropout(child.p))
-        elif isinstance(child, MistralHadamard):
+        elif isinstance(child, (MistralHadamard, LlamaHadamard)):
             new_child = EfficientMemoryHadamard(
                 compress_type=compress_config['hadamard']['mode'], 
                 compress_quality=compress_config['hadamard']['quality'], 
                 quantization_shape=compress_config['hadamard']['quantization_shape'],
             )
             setattr(module, name, new_child)
-        elif isinstance(child, MistralGEMM):
+        elif isinstance(child, (MistralGEMM, LlamaGEMM)):
             new_child = EfficientMemoryGEMM(
                 compress_type=compress_config['gemm']['mode'], 
                 compress_quality=compress_config['gemm']['quality'], 
                 quantization_shape=compress_config['gemm']['quantization_shape'],
+                attn_first=child.attention_first
             )
             setattr(module, name, new_child)
         else:
-            replace_module(child, compress_config)
+            replace_module(child, compress_config, replace_to_relu)
 
 
 def train():
@@ -500,8 +510,12 @@ def train():
                                           )
 
     # replace the module
-    replace_module(model, compress_config)
+    replace_module(model, compress_config, model_args.relu_replace)
     print(model)
+
+    # get the module's name
+    for name, module in model.named_modules():
+        module.name = name
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,

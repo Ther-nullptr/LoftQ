@@ -64,6 +64,10 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to use zero-shot model."},
     )
+    replace_relu: bool = field(
+        default=False,
+        metadata={"help": "Whether to replace ReLU."},
+    )
 
 
 @dataclass
@@ -71,6 +75,13 @@ class DataArguments:
     data_name: str = field(default="gsm8k", metadata={"help": "Dataset name."})
     batch_size: int = field(default=16, metadata={"help": "Evaluation batch size."})
 
+
+def replace_relu(module):
+    for name, child in module.named_children():
+        if isinstance(child, torch.nn.SiLU):
+            setattr(module, name, torch.nn.ReLU())
+        else:
+            replace_relu(child)
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -129,7 +140,6 @@ def evaluation(model_args, data_args):
                                         )
 
     model = model.to('cuda')
-    print(model)
 
     if model_args.zero_shot:
         # unload the adapter, only use the original models
@@ -138,6 +148,11 @@ def evaluation(model_args, data_args):
             if "lora" in name:
                 # set all the LoRA parameters to zero
                 param.data.zero_()
+
+    if model_args.replace_relu:
+        replace_relu(model)
+
+    print(model)
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
