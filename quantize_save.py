@@ -142,6 +142,17 @@ def quantize_and_save():
         task_type = TaskType.SEQ_2_SEQ_LM
         target_modules = ["q_proj", "k_proj", "v_proj", "fc1", "fc2", "out_proj"]
 
+    elif any(name in args.model_name_or_path.lower() for name in ["opt"]):
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=torch.bfloat16,
+            token=args.token,
+            trust_remote_code=True,
+            device_map="auto",
+        )
+        task_type = TaskType.CAUSAL_LM
+        target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
+
     elif any(name in args.model_name_or_path.lower() for name in ["deberta", "roberta", "bert"]):
         model = AutoModelForSequenceClassification.from_pretrained(args.model_name_or_path, token=args.token)
         task_type = TaskType.SEQ_CLS

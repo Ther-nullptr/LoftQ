@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
-from gact.memory_efficient_function import per_block_quantization, dct_compression_for_compress
+from gact.memory_efficient_function import per_block_quantization, dct_compression_for_compress, naive_quantization
 
 # codebook
 ACTAB = scipy.io.loadmat('/home/yujin-wa20/projects/jpeg-test-2/JpegCoeff.mat')['ACTAB']
@@ -76,8 +76,8 @@ class Encoder():
         x[x < -100] = -128
         return x
     
-    def preprocess_deflate_compress(self, x, input_shape, quant_shape):
-        return per_block_quantization(x, input_shape, quant_shape)[0]
+    def preprocess_deflate_compress(self, x):
+        return naive_quantization(x)[0]
 
     def _run_size_encode(self, run, size):
         if size == 0:
@@ -238,7 +238,7 @@ if __name__ == '__main__':
         elif model_args.encode_type == 'DIAG':
             x_quantized = encoder.preprocess_softmax_compress(x, input_shape, quality, quant_shape)
         elif model_args.encode_type == 'DEFLATE':
-            x_quantized = encoder.preprocess_deflate_compress(x, input_shape, quant_shape)
+            x_quantized = encoder.preprocess_deflate_compress(x)
 
         for i in range(x_quantized.shape[0]):
             if model_args.encode_type == 'DCT':

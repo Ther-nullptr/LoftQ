@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 if __name__ == '__main__':
     datadir = '/home/yujin-wa20/projects/LoftQ/output'
     files = os.listdir(datadir)
-    files = [file for file in files if 'fn' in file and '.png' not in file]
+    files = [file for file in files if 'o_proj.lora_A' in file and '.png' not in file]
     # sort by the number
     files = sorted(files, key = lambda s: int(s.split('.')[4]))
     
