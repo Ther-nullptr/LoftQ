@@ -44,16 +44,16 @@ class MixedTraditionalMLPFunc(torch.autograd.Function):
         else:
             x1, y1_lora_a, y1, x2, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
 
-        #! down proj part
+        # down proj part
         # d L / d w_down_lora_a = x2.T @ d L / d y2 @ w_down_lora_b.T
         # TODO: x2 maybe sparse
-        grad_w_down_lora_a = x2.T @ grad_output @ w_down_lora_b.T
+        grad_w_down_lora_a = x2.T @ (grad_output @ w_down_lora_b.T)
         # d L / d w_down_lora_b = y2_lora_a.T @ d L / d y2
         grad_w_down_lora_b = y2_lora_a.T @ grad_output
         # d L / d x2 = d L / d y2 @ w_down.T + d L / d y2 @ w_down_lora_b.T @ w_down_lora_a.T
         grad_x2 = grad_output @ w_down.T + grad_output @ w_down_lora_b.T @ w_down_lora_a.T
 
-        #! activation part
+        # activation part
         if ctx.activation_backward == 'relu':
             grad_y1 = grad_x2.clone()
             grad_y1[mask] = 0
@@ -67,9 +67,9 @@ class MixedTraditionalMLPFunc(torch.autograd.Function):
             tanh_y = torch.tanh(y1_extra)
             grad_y1 = grad_x2 * 0.5 * ( (1 + tanh_y) + y1 * ( (1 - tanh_y ** 2) * gamma * (1 + 3 * kappa * y1 ** 2) ) )
 
-        #! up proj part
+        # up proj part
         # d L / d w_up_lora_a = x1.T @ d L / d y1 @ w_up_lora_b.T
-        grad_w_up_lora_a = x1.T @ grad_y1 @ w_up_lora_b.T
+        grad_w_up_lora_a = x1.T @ (grad_y1 @ w_up_lora_b.T)
         # d L / d w_up_lora_b = y1_lora_a.T @ d L / d y1
         grad_w_up_lora_b = y1_lora_a.T @ grad_y1
         # d L / d x1 = d L / d y1 @ w_up.T + d L / d y1 @ w_up_lora_b.T @ w_up_lora_a.T
