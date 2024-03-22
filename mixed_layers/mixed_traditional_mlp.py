@@ -80,7 +80,8 @@ class MixedTraditionalMLPFunc(torch.autograd.Function):
 
 
 class MixedTraditionalMLP(torch.nn.Module):
-    def __init__(self, hidden_size, intermediate_size, rank, dropping=0.5, bias=False):
+    def __init__(self, hidden_size, intermediate_size, rank, activation_forward='relu', activation_backward='relu', dropping=0.5, bias=False):
+        super(MixedTraditionalMLP, self).__init__()
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.dropping = dropping
@@ -96,8 +97,8 @@ class MixedTraditionalMLP(torch.nn.Module):
         self.down_proj_lora_b = torch.nn.Linear(self.rank, self.hidden_size, bias=False)
 
         # activation function method. Now support: ReLU, SiLU, GELU
-        self.activation_forward = 'relu'
-        self.activation_backward = 'relu'
+        self.activation_forward = activation_forward
+        self.activation_backward = activation_backward
 
     def forward(self, x):
         #! Notice we use equation y = xW + b; instead of default y = xW^T + b

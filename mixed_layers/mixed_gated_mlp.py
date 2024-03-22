@@ -1,7 +1,7 @@
 import math
 import torch
 
-class GatedTraditioonalMLPFunc(torch.autograd.Function):
+class GatedMLPFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x1, w_gate, b_gate, w_gate_lora_a, w_gate_lora_b, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b, activation_forward, activation_backward):
         # forward process: gate_proj
@@ -57,7 +57,7 @@ class GatedTraditioonalMLPFunc(torch.autograd.Function):
         # TODO: x2 maybe sparse
         grad_w_down_lora_a = x3.T @ (grad_output @ w_down_lora_b.T)
         # d L / d w_down_lora_b = y2_lora_a.T @ d L / d y2
-        grad_w_down_lora_b = y2_lora_a.T @ grad_output
+        grad_w_down_lora_b = y3_lora_a.T @ grad_output
         # d L / d x2 = d L / d y2 @ w_down.T + d L / d y2 @ w_down_lora_b.T @ w_down_lora_a.T
         grad_x2 = grad_output @ w_down.T + grad_output @ w_down_lora_b.T @ w_down_lora_a.T
 
@@ -98,3 +98,47 @@ class GatedTraditioonalMLPFunc(torch.autograd.Function):
         grad_x1 += grad_y1 @ w_gate.T + grad_y1 @ w_gate_lora_b.T @ w_gate_lora_a.T
 
         return grad_x1, None, None, grad_w_gate_lora_a, grad_w_gate_lora_b, None, None, grad_w_up_lora_a, grad_w_up_lora_b, None, None, grad_w_down_lora_a, grad_w_down_lora_b, None, None
+    
+
+class GatedMLP(torch.nn.Module):
+    def __init__(self, hidden_size, intermediate_size, rank, activation_forward='relu', activation_backward='relu', dropping=0.5, bias=False):
+        super(GatedMLP, self).__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.dropping = dropping
+        self.rank = rank
+
+        # linear layers
+        self.gate_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=bias)
+        self.gate_proj_lora_a = torch.nn.Linear(self.hidden_size, self.rank, bias=False)
+        self.gate_proj_lora_b = torch.nn.Linear(self.rank, self.intermediate_size, bias=False)
+
+        self.up_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=bias)
+        self.up_proj_lora_a = torch.nn.Linear(self.hidden_size, self.rank, bias=False)
+        self.up_proj_lora_b = torch.nn.Linear(self.rank, self.intermediate_size, bias=False)
+
+        self.down_proj = torch.nn.Linear(self.intermediate_size, self.hidden_size, bias=bias)
+        self.down_proj_lora_a = torch.nn.Linear(self.intermediate_size, self.rank, bias=False)
+        self.down_proj_lora_b = torch.nn.Linear(self.rank, self.hidden_size, bias=False)
+
+        self.activation_forward = activation_forward
+        self.activation_backward = activation_backward
+
+    def forward(self, input):
+        return GatedMLPFunc.apply(
+            input,
+            self.gate_proj.weight,
+            self.gate_proj.bias,
+            self.gate_proj_lora_a.weight,
+            self.gate_proj_lora_b.weight,
+            self.up_proj.weight,
+            self.up_proj.bias,
+            self.up_proj_lora_a.weight,
+            self.up_proj_lora_b.weight,
+            self.down_proj.weight,
+            self.down_proj.bias,
+            self.down_proj_lora_a.weight,
+            self.down_proj_lora_b.weight,
+            self.activation_forward,
+            self.activation_backward
+        )
