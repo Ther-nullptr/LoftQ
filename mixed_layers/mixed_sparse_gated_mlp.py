@@ -43,27 +43,42 @@ class MixedSparseGatedMLPFunc(torch.autograd.Function):
         zero_count_per_channel = (x3 == 0).sum(dim=-2) # [bs, seq_len, hidden_dim] -> [bs, hidden_dim]
         actual_maintain_channel = min(int(sparsity_ratio * x3.size(-1)), maintain_channels)
         # record the top sparsity_ratio channels
-        _, topk_indices = zero_count_per_channel.topk(actual_maintain_channel, dim=-1, largest=False)
-        # delete the sparse channels, and also delete the corresponding x3 channels
-        x3 = x3[:, :, topk_indices]
-        xL = xL[:, :, topk_indices]
-        xR = xR * mask # the xR is sparse version for storage
-        xR = xR[:, :, topk_indices]
+        _, topk_indices = zero_count_per_channel.topk(actual_maintain_channel, dim=-1, largest=True)
 
-        ctx.save_for_backward(x1, y1_lora_a, mask, xL, xR, y2_lora_a, x3, y3_lora_a, w_gate, b_gate, w_gate_lora_a, w_gate_lora_b, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b)
+        x3_save = torch.zeros((*x3.shape[:-1], actual_maintain_channel), dtype=x3.dtype)
+        xL_save = torch.zeros((*xL.shape[:-1], actual_maintain_channel), dtype=xL.dtype)
+        xR_save = torch.zeros((*xR.shape[:-1], actual_maintain_channel), dtype=xR.dtype)
+
+        xR = xR * mask # the xR is sparse version for storage
+
+        for i in range(len(topk_indices)):
+            batch_idx = i
+            col_indices = topk_indices[i]
+            x3_save[i] = x3[batch_idx, :, col_indices]
+            xL_save[i] = xL[batch_idx, :, col_indices]
+            xR_save[i] = xR[batch_idx, :, col_indices]
+
+        ctx.save_for_backward(x1, y1_lora_a, mask, xL_save, xR_save, y2_lora_a, x3_save, y3_lora_a, w_gate, b_gate, w_gate_lora_a, w_gate_lora_b, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b)
         ctx.topk_indices = topk_indices
         ctx.x3_shape = x3.shape
+        ctx.x3_device = x3.device
 
         return y3
     
     @staticmethod
     def backward(ctx, grad_output):
-        x1, y1_lora_a, mask, xL, xR, y2_lora_a, x3, y3_lora_a, w_gate, b_gate, w_gate_lora_a, w_gate_lora_b, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
+        topk_indices = ctx.topk_indices
+        x1, y1_lora_a, mask, xL_save, xR_save, y2_lora_a, x3_save, y3_lora_a, w_gate, b_gate, w_gate_lora_a, w_gate_lora_b, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
 
         # convert the x3, xL, xR to the original shape
-        x3 = torch.zeros(ctx.x3_shape, device=x3.device).scatter(-1, ctx.topk_indices.unsqueeze(1).expand(-1, x3.size(1), -1), x3)
-        xL = torch.zeros(ctx.x3_shape, device=x3.device).scatter(-1, ctx.topk_indices.unsqueeze(1).expand(-1, x3.size(1), -1), xL)
-        xR = torch.zeros(ctx.x3_shape, device=x3.device).scatter(-1, ctx.topk_indices.unsqueeze(1).expand(-1, x3.size(1), -1), xR)
+        x3 = torch.zeros(ctx.x3_shape, device=ctx.x3_device, dtype=x3_save.dtype)
+        xL = torch.zeros(ctx.x3_shape, device=ctx.x3_device, dtype=xL_save.dtype)
+        xR = torch.zeros(ctx.x3_shape, device=ctx.x3_device, dtype=xR_save.dtype)
+
+        for i in range(x3_save.shape[0]):
+            x3[i, :, topk_indices[i]] = x3_save[i]
+            xL[i, :, topk_indices[i]] = xL_save[i]
+            xR[i, :, topk_indices[i]] = xR_save[i]
 
         # down proj part
         # d L / d w_down_lora_a = x3.T @ d L / d y3 @ w_down_lora_b.T

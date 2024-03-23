@@ -35,21 +35,32 @@ class MixedSparseTraditionalMLPFunc(torch.autograd.Function):
         actual_maintain_channel = min(int(sparsity_ratio * x2.size(-1)), maintain_channels)
         # record the top sparsity_ratio channels
         _, topk_indices = zero_counts_per_channel.topk(actual_maintain_channel, dim=-1, largest=False)
-        # delete the sparse channels, and also delete the corresponding x2 channels
-        x2 = x2[:, :, topk_indices]
 
-        ctx.save_for_backward(x1, y1_lora_a, mask, x2, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b)
+        # delete the sparse channels, and also delete the corresponding x2 channels
+        x2_save = torch.zeros((*x2.shape[:-1], actual_maintain_channel), dtype=x2.dtype)
+
+        for i in range(len(topk_indices)):
+            batch_idx = i
+            col_indices = topk_indices[i]
+            x2_save[i] = x2[batch_idx, :, col_indices]
+
+        ctx.save_for_backward(x1, y1_lora_a, mask, x2_save, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b)
         ctx.topk_indices = topk_indices
         ctx.x2_shape = x2.shape
+        ctx.x2_device = x2.device
 
         return y2
 
     @staticmethod
     def backward(ctx, grad_output):
-        x1, y1_lora_a, mask, x2, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
+        topk_indices = ctx.topk_indices
+        x1, y1_lora_a, mask, x2_save, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
 
         # convert the x2 to the original shape
-        x2 = torch.zeros(ctx.x2_shape, device=x2.device).scatter(-1, ctx.topk_indices.unsqueeze(1).expand(-1, x2.size(1), -1), x2)
+        x2 = torch.zeros(ctx.x2_shape, device=ctx.x2_device, dtype=x2_save.dtype)
+
+        for i in range(x2_save.shape[0]):
+            x2[i, :, topk_indices[i]] = x2_save[i]
 
         # down proj part
         # d L / d w_down_lora_a = x2.T @ d L / d y2 @ w_down_lora_b.T
