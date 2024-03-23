@@ -4,8 +4,8 @@ import torch
 class MixedAttention(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, q, k, v, attention_mask, 
-        sparsity_ratio, maintain_heads
+        ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attention_mask: torch.Tensor, 
+        sparsity_ratio: float, maintain_heads: int
     ):
         # q,k,v: [bsz, num_heads, q_len, head_dim]
         # notice forward process no need to drop heads
@@ -53,7 +53,7 @@ class MixedAttention(torch.autograd.Function):
         return o
     
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: torch.Tensor):
         min_indices = ctx.min_indices
         q_save, k_save, v_save, a_save = ctx.saved_tensors
 

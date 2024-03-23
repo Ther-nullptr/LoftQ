@@ -3,7 +3,12 @@ import torch
 
 class MixedSparseTraditionalMLPFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x1, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b, activation_forward, sparsity_ratio, maintain_channels):
+    def forward(
+        ctx, x1: torch.Tensor, 
+        w_up: torch.Tensor, b_up: torch.Tensor, w_up_lora_a: torch.Tensor, w_up_lora_b: torch.Tensor, 
+        w_down: torch.Tensor, b_down: torch.Tensor, w_down_lora_a: torch.Tensor, w_down_lora_b: torch.Tensor, 
+        activation_forward: str, sparsity_ratio: float, maintain_channels: int
+    ):
         # forward process: up_proj
         y1_main = x1 @ w_up + b_up if b_up is not None else x1 @ w_up
         y1_lora_a = x1 @ w_up_lora_a
@@ -52,7 +57,7 @@ class MixedSparseTraditionalMLPFunc(torch.autograd.Function):
         return y2
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: torch.Tensor):
         topk_indices = ctx.topk_indices
         x1, y1_lora_a, mask, x2_save, y2_lora_a, w_up, b_up, w_up_lora_a, w_up_lora_b, w_down, b_down, w_down_lora_a, w_down_lora_b = ctx.saved_tensors
 
