@@ -1,7 +1,7 @@
 import math
 import torch
 
-class MixedAttention(torch.autograd.Function):
+class MixedAttentionFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attention_mask: torch.Tensor, 
@@ -86,3 +86,14 @@ class MixedAttention(torch.autograd.Function):
 
         return grad_q, grad_k, grad_v, None, None, None, None, None
 
+
+class MixedAttention(torch.nn.Module):
+    def __init__(self, hidden_dim: int, num_heads: int, sparsity_ratio: float, maintain_heads: int):
+        super(MixedAttention, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.sparsity_ratio = sparsity_ratio
+        self.maintain_heads = maintain_heads
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attention_mask: torch.Tensor):
+        return MixedAttentionFunc.apply(q, k, v, attention_mask, self.sparsity_ratio, self.maintain_heads)
