@@ -44,17 +44,22 @@ from transformers import (
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
-    TrainingArguments,
     default_data_collator,
     is_torch_tpu_available,
     set_seed,
 )
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
+from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
+import peft
 from peft import PeftModel, get_peft_model, TaskType, LoraConfig
+
+from train_gsm8k_drop import replace_module_for_drop, replace_module_for_quantization
+
+import os
+os.environ["WANDB_PROJECT"]="wikitext-2"
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.37.0.dev0")
@@ -183,6 +188,126 @@ class ModelArguments:
         default=16,
         metadata={"help": "LoftQ does not require this config. Used for QLoRA."},
     )
+    linear_mode: str = field(
+        default="NF4",
+        metadata={"help": "Linear mode."},
+    )
+    linear_quality: int = field(
+        default=75,
+        metadata={"help": "Linear quality."},
+    )
+    linear_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "Linear quantization shape."},
+    )
+    silu_mode: str = field(
+        default="NF4",
+        metadata={"help": "SiLU mode."},
+    )
+    silu_quality: int = field(
+        default=75,
+        metadata={"help": "SiLU quality."},
+    )
+    silu_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "SiLU quantization shape."},
+    )
+    layernorm_mode: str = field(
+        default="NF4",
+        metadata={"help": "layernorm mode."},
+    )
+    layernorm_quality: int = field(
+        default=75,
+        metadata={"help": "layernorm quality."},
+    )
+    layernorm_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "layernorm quantization shape."},
+    )
+    layernorm_use_4bit: bool = field(
+        default=False,
+        metadata={"help": "use 4bit quantization."},
+    )
+    softmax_mode: str = field(
+        default="NF4",
+        metadata={"help": "softmax mode."},
+    )
+    softmax_quality: int = field(
+        default=75,
+        metadata={"help": "softmax quality."},
+    )
+    softmax_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "softmax quantization shape."},
+    )
+    softmax_pruning: bool = field(
+        default=False,
+        metadata={"help": "softmax pruning."},
+    )
+    softmax_pruning_val: int = field(
+        default=-100,
+        metadata={"help": "softmax pruning val."},
+    )
+    gemm_mode: str = field(
+        default="NF4",
+        metadata={"help": "gemm mode."},
+    )
+    gemm_quality: int = field(
+        default=75,
+        metadata={"help": "gemm quality."},
+    )
+    gemm_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "gemm quantization shape."},
+    )
+    hadamard_mode: str = field(
+        default="NF4",
+        metadata={"help": "hadamard mode."},
+    )
+    hadamard_quality: int = field(
+        default=75,
+        metadata={"help": "hadamard quality."},
+    )
+    hadamard_quantization_shape: int = field(
+        default=16,
+        metadata={"help": "hadamard quantization shape."},
+    )
+    dim_sparsity_ratio: float = field(
+        default=0.1,
+        metadata={"help": "dimension sparsity (for MLPs)"}
+    )
+    head_sparsity_ratio: float = field(
+        default=0.5,
+        metadata={"help": "head sparsity (for Attention Heads)"}
+    )
+    maintain_channels: float = field(
+        default=0.9,
+        metadata={"help": "maintain channels"}
+    )
+    maintain_heads: int = field(
+        default=1,
+        metadata={"help": "maintain heads"}
+    ),
+    quantize_inside_sparse_attention: bool = field(
+        default=False,
+        metadata={"help": "quantize inside sparse attention"}
+    )
+    quantize_inside_mlp: bool = field(
+        default=False,
+        metadata={"help": "quantize inside mlp"}
+    )
+    small_value_approx: bool = field(
+        default=False,
+        metadata={"help": "small value approximation"}
+    )
+    transform_bp_enable: bool = field(
+        default=False,
+        metadata={"help": "Enable transform bottleneck pruning."},
+    )
+    drop_bp_enable: bool = field(
+        default=False,
+        metadata={"help": "Enable drop bottleneck pruning."},
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -269,6 +394,14 @@ class DataTrainingArguments:
                 assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
 
 
+@dataclass
+class TrainingArguments(transformers.TrainingArguments):
+    expt_name: str = field(
+        default="default",
+        metadata={"help": "Experiment name"},
+    )
+
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -281,6 +414,42 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # construct compress config
+    compress_config = {
+        'linear': {
+            'mode': model_args.linear_mode,
+            'quality': model_args.linear_quality
+        },
+        'silu': {
+            'mode': model_args.silu_mode,
+            'quality': model_args.silu_quality,
+            'quantization_shape': model_args.silu_quantization_shape
+        },
+        'layernorm': {
+            'mode': model_args.layernorm_mode,
+            'quality': model_args.layernorm_quality,
+            'quantization_shape': model_args.layernorm_quantization_shape,
+            'use_4bit': model_args.layernorm_use_4bit
+        },
+        'softmax': {
+            'mode': model_args.softmax_mode,
+            'quality': model_args.softmax_quality,
+            'quantization_shape': model_args.softmax_quantization_shape,
+            'softmax_pruning': model_args.softmax_pruning,
+            'softmax_pruning_val': model_args.softmax_pruning_val
+        },
+        'gemm': {
+            'mode': model_args.gemm_mode,
+            'quality': model_args.gemm_quality,
+            'quantization_shape': model_args.gemm_quantization_shape
+        },
+        'hadamard': {
+            'mode': model_args.hadamard_mode,
+            'quality': model_args.hadamard_quality,
+            'quantization_shape': model_args.hadamard_quantization_shape
+        }
+    }
 
     if model_args.use_auth_token is not None:
         warnings.warn(
@@ -478,6 +647,7 @@ def main():
                 bnb_4bit_quant_type='nf4',
             ),
         )
+        model = peft.prepare_model_for_kbit_training(model)
     ##########################
     #       Peft Model       #
     ##########################
@@ -509,6 +679,20 @@ def main():
             is_trainable=True if training_args.do_train else False,
             token=model_args.token,
         )
+
+    # replace the module
+    print('*********************************')
+    print(f'{model_args.transform_bp_enable},{model_args.drop_bp_enable}')
+    print('*********************************')
+    if model_args.transform_bp_enable:
+        replace_module_for_quantization(model, compress_config, model_args)
+    if model_args.drop_bp_enable:
+        replace_module_for_drop(model, compress_config, model_args)
+    print(model)
+
+    for name, module in model.named_modules():
+        module.layer_id = name
+        module.extract_mode = False
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -716,12 +900,6 @@ def main():
         trainer.push_to_hub(**kwargs)
     else:
         trainer.create_model_card(**kwargs)
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
-
 
 if __name__ == "__main__":
     main()

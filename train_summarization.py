@@ -32,6 +32,9 @@ import numpy as np
 from datasets import load_dataset
 from filelock import FileLock
 
+import os
+os.environ["WANDB_PROJECT"]="summary"
+
 import torch
 import transformers
 from transformers import (

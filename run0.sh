@@ -1,7 +1,7 @@
 # finetune
-tag=mistral-7b-backward-sparse-attention-1-ffn-0.5
-exp_name=gsm8k_mistral-7b-backward-sparse_4bit_16rank_loftq_${tag}
-model_name=Mistral-7B-v0.1-4bit-16rank
+tag=opt-6.7b-backward-sparse-attention-0.5-ffn-0.1-quant-nf4-2
+exp_name=gsm8k_opt-6.7b-backward-sparse_4bit_16rank_loftq_${tag}
+model_name=opt-6.7b-4bit-16rank
 python -u train_gsm8k_drop.py \
     --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/${model_name} \
     --learning_rate 3e-4 \

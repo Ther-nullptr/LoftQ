@@ -11,27 +11,10 @@ import torch
 import transformers
 from torch.utils.data import Dataset
 from transformers import Trainer
+from gact.controller import Controller
 
-import peft
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 from datasets import load_dataset
-
-from gact.controller import Controller
-from gact.efficient_linear import EfficientMemoryLinear
-from gact.efficient_silu import EfficientMemorySiLU
-from gact.efficient_rmsnorm import EfficientMemoryRMSNorm
-from gact.efficient_softmax import EfficientMemorySoftmax
-from gact.efficient_dropout import EfficientMemoryDropout
-from gact.efficient_hadamard import EfficientMemoryHadamard
-from gact.efficient_gemm import EfficientMemoryGEMM
-from gact.efficient_flashattention import EfficientMemoryFlashAttention
-from gact.fwd_silu_bwd_relu import ForwardSiLUBackwardReLU
-
-from transformers.models.mistral.modeling_mistral import MistralRMSNorm, MistralGEMM, MistralHadamard
-from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaGEMM, LlamaHadamard
-
-import os
-os.environ["WANDB_PROJECT"]="gsm8k"
 
 
 IGNORE_INDEX = -100
@@ -41,6 +24,9 @@ DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 ANSWER_PROMPT = "The final answer is: "
 QUESTION_PROMPT = "\nAnswer the above question. First think step by step and then answer the final number.\n"
+
+import os
+os.environ["WANDB_PROJECT"]="gsm8k"
 
 
 @dataclass
@@ -88,102 +74,6 @@ class ModelArguments:
         default="L1",
         metadata={"help": "GACT level."},
     )
-    gradient_checkpointing_enable: bool = field(
-        default=False,
-        metadata={"help": "True: Use gradient checkpointing; False: Do not use gradient checkpointing"},
-    )
-    flash_attention: bool = field(
-        default=False,
-        metadata={"help": "True: Use Flash Attention; False: Do not use Flash Attention"},
-    )
-    linear_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "Linear mode."},
-    )
-    linear_quality: int = field(
-        default=75,
-        metadata={"help": "Linear quality."},
-    )
-    linear_quantization_shape: int = field(
-        default=64,
-        metadata={"help": "Linear quantization shape."},
-    )
-    silu_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "SiLU mode."},
-    )
-    silu_quality: int = field(
-        default=75,
-        metadata={"help": "SiLU quality."},
-    )
-    silu_quantization_shape: int = field(
-        default=64,
-        metadata={"help": "SiLU quantization shape."},
-    )
-    layernorm_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "layernorm mode."},
-    )
-    layernorm_quality: int = field(
-        default=75,
-        metadata={"help": "layernorm quality."},
-    )
-    layernorm_quantization_shape: int = field(
-        default=16,
-        metadata={"help": "layernorm quantization shape."},
-    )
-    layernorm_use_4bit: bool = field(
-        default=False,
-        metadata={"help": "use 4bit quantization."},
-    )
-    softmax_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "softmax mode."},
-    )
-    softmax_quality: int = field(
-        default=75,
-        metadata={"help": "softmax quality."},
-    )
-    softmax_quantization_shape: int = field(
-        default=64,
-        metadata={"help": "softmax quantization shape."},
-    )
-    softmax_pruning: bool = field(
-        default=False,
-        metadata={"help": "softmax pruning."},
-    )
-    softmax_pruning_val: int = field(
-        default=-100,
-        metadata={"help": "softmax pruning val."},
-    )
-    gemm_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "gemm mode."},
-    )
-    gemm_quality: int = field(
-        default=75,
-        metadata={"help": "gemm quality."},
-    )
-    gemm_quantization_shape: int = field(
-        default=16,
-        metadata={"help": "gemm quantization shape."},
-    )
-    hadamard_mode: str = field(
-        default="NAIVE",
-        metadata={"help": "hadamard mode."},
-    )
-    hadamard_quality: int = field(
-        default=75,
-        metadata={"help": "hadamard quality."},
-    )
-    hadamard_quantization_shape: int = field(
-        default=16,
-        metadata={"help": "hadamard quantization shape."},
-    )
-    relu_replace: bool = field(
-        default=False,
-        metadata={"help": "replace all silu to relu"}
-    )
 
 
 @dataclass
@@ -209,14 +99,38 @@ class TrainingArguments(transformers.TrainingArguments):
 
 
 class GACTTrainer(Trainer):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, controller, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.begin = False
         self.step = 0
+        self.controller = controller
         
     def compute_loss(self, model, inputs, return_outputs=False):
+        
+        # if the optimizer has state, we need to clear it
+        if self.step % 1 == 0 and self.step != 0: # use gradient accumulation(TODO: with bug)
+            self.controller.iterate(self.gact_backward)
+
         loss = super().compute_loss(model, inputs, return_outputs)
+
+        # generate the small batch for iterate
+        self.small_batch = {}
+        small_length = len(inputs["input_ids"]) // 4
+        for k, v in inputs.items():
+            self.small_batch[k] = v[:small_length]
+        
+        self.model = model
+
+        self.step += 1
+          
         return loss
+
+    def gact_backward(self):
+        optimizer_tmp = self.create_optimizer()
+        loss = super().compute_loss(self.model, self.small_batch, return_outputs=False)
+        optimizer_tmp.zero_grad()
+        loss.backward()
+
 
 
 def smart_tokenizer_and_embedding_resize(
@@ -310,26 +224,10 @@ class DataCollatorForSupervisedDataset(object):
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
-        #! a tricky way to pad the input_ids and labels to 16's multiple
-        # 1. find the max length of input_ids
-        max_len = max([len(input_id) for input_id in input_ids])
-        # 2. pad the input_ids and labels to 16's multiple
-        max_len = (max_len + 63) // 64 * 64
-        # 3. generate a max_len tensor
-        max_len_tensor = torch.randn(max_len).to(torch.int64)
-        # 4. append the max_len tensor to the input_ids and labels
-        input_ids.append(max_len_tensor)
-        labels.append(max_len_tensor)
-
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
-        
-        # delete the max_len tensor
-        input_ids = input_ids[:-1]
-        labels = labels[:-1]
-
         return dict(
             input_ids=input_ids,
             labels=labels,
@@ -347,110 +245,9 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
 
 
-def replace_module(module, compress_config, replace_to_relu):
-    for name, child in module.named_children():
-        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
-            original_weight_data = child.weight.data
-            original_bias_data = child.bias.data if child.bias is not None else None
-            new_child = EfficientMemoryLinear(
-                in_features=child.in_features,
-                out_features=child.out_features,
-                bias=child.bias is not None,
-                compress_type=compress_config['linear']['mode'],
-                compress_quality=compress_config['linear']['quality'],
-            )
-            new_child.weight.data = original_weight_data
-            if child.bias is not None:
-                new_child.bias.data = original_bias_data
-            setattr(module, name, new_child)
-        elif isinstance(child, torch.nn.SiLU):
-            if replace_to_relu:
-                setattr(module, name, ForwardSiLUBackwardReLU())
-            else:
-                setattr(module, name, EfficientMemorySiLU(compress_type=compress_config['silu']['mode'], compress_quality=compress_config['silu']['quality'], quantization_shape=compress_config['silu']['quantization_shape']))
-        elif isinstance(child, (MistralRMSNorm, LlamaRMSNorm)):
-            original_weight_data = child.weight.data
-            new_child = EfficientMemoryRMSNorm(
-                normalized_shape=child.weight.data.shape,
-                eps=child.variance_epsilon,
-                elementwise_affine=True,
-                bias=False,
-                compress_type=compress_config['layernorm']['mode'],
-                compress_quality=compress_config['layernorm']['quality'],
-                quantization_shape=compress_config['layernorm']['quantization_shape'],
-                use_4bit=compress_config['layernorm']['use_4bit']
-            )
-            new_child.weight.data = original_weight_data
-            setattr(module, name, new_child)
-        elif isinstance(child, torch.nn.Softmax):
-            new_child = EfficientMemorySoftmax(
-                -1,
-                compress_type=compress_config['softmax']['mode'], 
-                compress_quality=compress_config['softmax']['quality'], 
-                quantization_shape=compress_config['softmax']['quantization_shape'],
-                pruning=compress_config['softmax']['softmax_pruning'],
-                pruning_val=compress_config['softmax']['softmax_pruning_val']
-            )
-            setattr(module, name, new_child)
-        elif isinstance(child, torch.nn.Dropout):
-            setattr(module, name, EfficientMemoryDropout(child.p))
-        elif isinstance(child, (MistralHadamard, LlamaHadamard)):
-            new_child = EfficientMemoryHadamard(
-                compress_type=compress_config['hadamard']['mode'], 
-                compress_quality=compress_config['hadamard']['quality'], 
-                quantization_shape=compress_config['hadamard']['quantization_shape'],
-            )
-            setattr(module, name, new_child)
-        elif isinstance(child, (MistralGEMM, LlamaGEMM)):
-            new_child = EfficientMemoryGEMM(
-                compress_type=compress_config['gemm']['mode'], 
-                compress_quality=compress_config['gemm']['quality'], 
-                quantization_shape=compress_config['gemm']['quantization_shape'],
-                attn_first=child.attention_first
-            )
-            setattr(module, name, new_child)
-        else:
-            replace_module(child, compress_config, replace_to_relu)
-
-
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
-    compress_config = {
-        'linear': {
-            'mode': model_args.linear_mode,
-            'quality': model_args.linear_quality
-        },
-        'silu': {
-            'mode': model_args.silu_mode,
-            'quality': model_args.silu_quality,
-            'quantization_shape': model_args.silu_quantization_shape
-        },
-        'layernorm': {
-            'mode': model_args.layernorm_mode,
-            'quality': model_args.layernorm_quality,
-            'quantization_shape': model_args.layernorm_quantization_shape,
-            'use_4bit': model_args.layernorm_use_4bit
-        },
-        'softmax': {
-            'mode': model_args.softmax_mode,
-            'quality': model_args.softmax_quality,
-            'quantization_shape': model_args.softmax_quantization_shape,
-            'softmax_pruning': model_args.softmax_pruning,
-            'softmax_pruning_val': model_args.softmax_pruning_val
-        },
-        'gemm': {
-            'mode': model_args.gemm_mode,
-            'quality': model_args.gemm_quality,
-            'quantization_shape': model_args.gemm_quantization_shape
-        },
-        'hadamard': {
-            'mode': model_args.hadamard_mode,
-            'quality': model_args.hadamard_quality,
-            'quantization_shape': model_args.hadamard_quantization_shape
-        }
-    }
 
     if model_args.full_precision:
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -458,27 +255,20 @@ def train():
             low_cpu_mem_usage=True,
             torch_dtype=torch.bfloat16,
             token=model_args.token,
-            attn_implementation="flash_attention_2" if model_args.flash_attention else "eager",
         )
     else:
         model = transformers.AutoModelForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             low_cpu_mem_usage=True,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=torch.float32,
             token=model_args.token,
-            use_cache=False if model_args.gradient_checkpointing_enable else True,
             quantization_config=transformers.BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
+                bnb_4bit_use_double_quant=False,
                 bnb_4bit_quant_type='nf4',
             ),
-            attn_implementation="flash_attention_2" if model_args.flash_attention else "eager",
         )
-        model = peft.prepare_model_for_kbit_training(model, use_gradient_checkpointing=model_args.gradient_checkpointing_enable, gradient_checkpointing_kwargs={"use_reentrant": False})
-        if (model_args.gradient_checkpointing_enable):
-            print("Gradient Checkpointing is enabled")
-    
     ##########################
     #       Peft Model       #
     ##########################
@@ -508,21 +298,19 @@ def train():
                                           is_trainable=True,
                                           token=model_args.token,
                                           )
-
-    # replace the module
-    replace_module(model, compress_config, model_args.relu_replace)
-    print(model)
-
-    # get the module's name
-    for name, module in model.named_modules():
-        module.name = name
+    
+    # enable gact
+    gact.set_optimization_level(model_args.gact_level)
+    controller = Controller(model)
+    controller.install_hook()
+    print(f"GACT is enabled, with level {model_args.gact_level}")
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         token=model_args.token,
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
-        padding_side="left",
+        padding_side="right",
         use_fast=False,
     )
     special_tokens_dict = dict()
@@ -550,7 +338,7 @@ def train():
         f"lr_{training_args.learning_rate}",
         f"seed_{training_args.seed}",
     )
-    trainer = GACTTrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = GACTTrainer(model=model, controller=controller, tokenizer=tokenizer, args=training_args, **data_module)
     trainer.train()
     trainer.save_state()
     trainer.save_model(output_dir=training_args.output_dir)

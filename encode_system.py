@@ -209,20 +209,25 @@ class Encoder():
 
 
 if __name__ == '__main__':
+    # DCT good: base_model.model.model.layers.0.self_attn.v_proj.lora_A.default.pt
+    # DCT bad: base_model.model.model.layers.0.mlp.gate_proj.lora_A.default.pt
+
     parser = transformers.HfArgumentParser(Arguments)
     model_args,  = parser.parse_args_into_dataclasses()
-    encoder = Encoder()
+    encoder = Encoder(continous_zero_num=model_args.continous_zero_num)
 
-    dir = 'output'
+    dir = 'output/mistral'
     quality = model_args.quality
-    pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and model_args.compress_component in f]
+    pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'lora_A' in f]
+    pt_files = sorted(pt_files, key = lambda s: int(s.split('.')[4]))
 
     total_before_encode_size = 0
     total_after_encode_size = 0
 
-    for pt_file in pt_files:
+    for i in range(len(pt_files)):
+        print(pt_files[i])
         quant_shape = 16 if model_args.compress_component == 'softmax' else 64
-        x = torch.load(f'{dir}/{pt_file}')
+        x = torch.load(f'{dir}/{pt_files[i]}')
         if model_args.compress_component == 'softmax':
             # merge the 1st and 2nd dimensions
             x = torch.softmax(x, dim=-1)
@@ -240,18 +245,18 @@ if __name__ == '__main__':
         elif model_args.encode_type == 'DEFLATE':
             x_quantized = encoder.preprocess_deflate_compress(x)
 
-        for i in range(x_quantized.shape[0]):
+        for j in range(x_quantized.shape[0]):
             if model_args.encode_type == 'DCT':
-                compressed_size = encoder.dct_encode(x_quantized[i], quant_shape)
+                compressed_size = encoder.dct_encode(x_quantized[j], quant_shape)
             elif model_args.encode_type == 'JPEG':
-                compressed_size = encoder.jpeg_encode(x_quantized[i], quant_shape, quality=quality)
+                compressed_size = encoder.jpeg_encode(x_quantized[j], quant_shape, quality=quality)
             elif model_args.encode_type == 'DIAG':
-                compressed_size = encoder.diagnal_encode(x_quantized[i], quant_shape)
+                compressed_size = encoder.diagnal_encode(x_quantized[j], quant_shape)
             elif model_args.encode_type == 'DEFLATE':
-                compressed_size = encoder.deflate_encode(x_quantized[i])
+                compressed_size = encoder.deflate_encode(x_quantized[j])
             after_encode_size += compressed_size
 
-        print(f'{pt_file} ratio: {after_encode_size / before_encode_size}')
+        print(f'{pt_files[i]} ratio: {after_encode_size / before_encode_size}')
 
         total_before_encode_size += before_encode_size
         total_after_encode_size += after_encode_size
