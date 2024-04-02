@@ -197,7 +197,7 @@ class ModelArguments:
         metadata={"help": "Linear quality."},
     )
     linear_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "Linear quantization shape."},
     )
     silu_mode: str = field(
@@ -209,7 +209,7 @@ class ModelArguments:
         metadata={"help": "SiLU quality."},
     )
     silu_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "SiLU quantization shape."},
     )
     layernorm_mode: str = field(
@@ -237,7 +237,7 @@ class ModelArguments:
         metadata={"help": "softmax quality."},
     )
     softmax_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "softmax quantization shape."},
     )
     softmax_pruning: bool = field(
@@ -257,7 +257,7 @@ class ModelArguments:
         metadata={"help": "gemm quality."},
     )
     gemm_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "gemm quantization shape."},
     )
     hadamard_mode: str = field(
@@ -269,7 +269,7 @@ class ModelArguments:
         metadata={"help": "hadamard quality."},
     )
     hadamard_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "hadamard quantization shape."},
     )
     dim_sparsity_ratio: float = field(
@@ -396,7 +396,7 @@ class DataTrainingArguments:
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
-    expt_name: str = field(
+    run_name: str = field(
         default="default",
         metadata={"help": "Experiment name"},
     )
@@ -686,8 +686,8 @@ def main():
     print('*********************************')
     if model_args.transform_bp_enable:
         replace_module_for_quantization(model, compress_config, model_args)
-    if model_args.drop_bp_enable:
-        replace_module_for_drop(model, compress_config, model_args)
+    # if model_args.drop_bp_enable:
+    #     replace_module_for_drop(model, compress_config, model_args)
     print(model)
 
     for name, module in model.named_modules():

@@ -117,7 +117,7 @@ class ModelArguments:
         metadata={"help": "Linear quality."},
     )
     linear_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "Linear quantization shape."},
     )
     silu_mode: str = field(
@@ -129,11 +129,11 @@ class ModelArguments:
         metadata={"help": "SiLU quality."},
     )
     silu_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "SiLU quantization shape."},
     )
     layernorm_mode: str = field(
-        default="NF4",
+        default="NAIVE",
         metadata={"help": "layernorm mode."},
     )
     layernorm_quality: int = field(
@@ -157,7 +157,7 @@ class ModelArguments:
         metadata={"help": "softmax quality."},
     )
     softmax_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "softmax quantization shape."},
     )
     softmax_pruning: bool = field(
@@ -177,7 +177,7 @@ class ModelArguments:
         metadata={"help": "gemm quality."},
     )
     gemm_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "gemm quantization shape."},
     )
     hadamard_mode: str = field(
@@ -189,7 +189,7 @@ class ModelArguments:
         metadata={"help": "hadamard quality."},
     )
     hadamard_quantization_shape: int = field(
-        default=16,
+        default=64,
         metadata={"help": "hadamard quantization shape."},
     )
     relu_replace: bool = field(
@@ -400,15 +400,19 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
 
 def replace_module_for_quantization(module, compress_config, model_args):
     for name, child in module.named_children():
-        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
+        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and ('lm_head' not in name) and (child.in_features > 100):
+            #! record the related list
+            #! opt: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'fc1', 'fc2']
+            #! prosparse_llama/mistral: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
+            dense_linear_list = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'fc1', 'gate_proj', 'up_proj']
             original_weight_data = child.weight.data
             original_bias_data = child.bias.data if child.bias is not None else None
             new_child = EfficientMemoryLinear(
                 in_features=child.in_features,
                 out_features=child.out_features,
                 bias=child.bias is not None,
-                compress_type=compress_config['linear']['mode'],
-                compress_quality=compress_config['linear']['quality'],
+                compress_type=compress_config['linear']['mode'] if name in dense_linear_list else 'NAIVE',
+                compress_quality=compress_config['linear']['quality']
             )
             new_child.weight.data = original_weight_data
             if child.bias is not None:
@@ -455,7 +459,7 @@ def replace_module_for_quantization(module, compress_config, model_args):
             new_child = EfficientMemorySoftmax(
                 compress_type=compress_config['softmax']['mode'], 
                 compress_quality=compress_config['softmax']['quality'], 
-                # quantization_shape=compress_config['softmax']['quantization_shape'],
+                quantization_shape=compress_config['softmax']['quantization_shape'],
                 # pruning=compress_config['softmax']['softmax_pruning'],
                 # pruning_val=compress_config['softmax']['softmax_pruning_val']
             )
@@ -470,11 +474,12 @@ def replace_module_for_quantization(module, compress_config, model_args):
             )
             setattr(module, name, new_child)
         elif isinstance(child, (MistralGEMM, LlamaGEMM, SparseLlamaGEMM)) or 'GEMM' in child.__class__.__name__:
+            attn_first = 'gemm2' in name
             new_child = EfficientMemoryGEMM(
                 compress_type=compress_config['gemm']['mode'], 
                 compress_quality=compress_config['gemm']['quality'], 
                 quantization_shape=compress_config['gemm']['quantization_shape'],
-                # attn_first=child.attention_first
+                attn_first=attn_first
             )
             setattr(module, name, new_child)
         else:
@@ -600,10 +605,10 @@ def train():
                                           )
 
     # replace the module
-    # if model_args.transform_bp_enable:
-    #     replace_module_for_quantization(model, compress_config, model_args)
-    if model_args.drop_bp_enable:
-        replace_module_for_drop(model, compress_config, model_args)
+    if model_args.transform_bp_enable:
+        replace_module_for_quantization(model, compress_config, model_args)
+    # if model_args.drop_bp_enable:
+    #     replace_module_for_drop(model, compress_config, model_args)
     print(model)
 
     # get the module's name

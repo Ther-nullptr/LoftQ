@@ -76,8 +76,8 @@ class Encoder():
         x[x < -100] = -128
         return x
     
-    def preprocess_deflate_compress(self, x):
-        return naive_quantization(x)[0]
+    def preprocess_deflate_compress(self, x, input_shape, quant_shape):
+        return self._preprocess_quantization(x, input_shape, quant_shape)[0]
 
     def _run_size_encode(self, run, size):
         if size == 0:
@@ -216,10 +216,15 @@ if __name__ == '__main__':
     model_args,  = parser.parse_args_into_dataclasses()
     encoder = Encoder(continous_zero_num=model_args.continous_zero_num)
 
-    dir = 'output/mistral'
+    dir = 'output/prosparse_llama'
+    number = 5 if 'opt' in dir else 4
     quality = model_args.quality
-    pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'lora_A' in f]
-    pt_files = sorted(pt_files, key = lambda s: int(s.split('.')[4]))
+    #! linear: [f for f in os.listdir(dir) if f.endswith('.pt') and 'lora_A' in f and 'down_proj' in f and 'k_proj' not in f and 'v_proj' not in f and 'gate_proj' not in f]
+    #! gemm: [f for f in os.listdir(dir) if f.endswith('.pt') and 'gemm' in f]
+    #! hadamard: [f for f in os.listdir(dir) if f.endswith('.pt') and 'hadamard' in f]
+    #! layernorm: [f for f in os.listdir(dir) if f.endswith('.pt') and 'final_layer_norm' in f and 'self_attn_layer_norm' in f]
+    pt_files = [f for f in os.listdir(dir) if f.endswith('.pt') and 'down_proj' in f]
+    pt_files = sorted(pt_files, key = lambda s: int(s.split('.')[number]))
 
     total_before_encode_size = 0
     total_after_encode_size = 0
@@ -233,6 +238,10 @@ if __name__ == '__main__':
             x = torch.softmax(x, dim=-1)
             x = x.view(x.shape[0] * x.shape[1], *x.shape[2:])
         x = x.cpu().detach()
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0)
+        elif len(x.shape) == 4:
+            x = x.reshape(-1, *x.shape[2:])
         input_shape = x.shape
         before_encode_size = x.numel() * 8
         after_encode_size = 0
@@ -243,7 +252,7 @@ if __name__ == '__main__':
         elif model_args.encode_type == 'DIAG':
             x_quantized = encoder.preprocess_softmax_compress(x, input_shape, quality, quant_shape)
         elif model_args.encode_type == 'DEFLATE':
-            x_quantized = encoder.preprocess_deflate_compress(x)
+            x_quantized = encoder.preprocess_deflate_compress(x, input_shape, quant_shape)
 
         for j in range(x_quantized.shape[0]):
             if model_args.encode_type == 'DCT':

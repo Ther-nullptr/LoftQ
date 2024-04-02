@@ -1,7 +1,7 @@
 # finetune
-tag=mistral-7b-backward-sparse-attention-1-ffn-0.5
-exp_name=gsm8k_mistral-7b-backward-sparse_4bit_16rank_loftq_${tag}
-model_name=Mistral-7B-v0.1-4bit-16rank
+tag=prosparse-llama-7b-4bit-16rank-layernorm-8bit-linear-jpeg
+exp_name=gsm8k_${tag}
+model_name=prosparse-llama-2-7b-4bit-16rank
 python -u train_gsm8k_drop.py \
     --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/${model_name} \
     --learning_rate 3e-4 \
@@ -18,7 +18,21 @@ python -u train_gsm8k_drop.py \
     --lr_scheduler_type "cosine" \
     --logging_steps 10 \
     --do_train \
-    --report_to wandb
+    --report_to wandb \
+    --transform_bp_enable \
+    --linear_mode JPEG \
+    --silu_mode JPEG \
+    --layernorm_mode NAIVE \
+    --softmax_mode PRUNE \
+    --gemm_mode JPEG \
+    --hadamard_mode JPEG \
+    --linear_quality 30 \
+    --silu_quality 30 \
+    --layernorm_quality 30 \
+    --softmax_quality 30 \
+    --gemm_quality 30 \
+    --hadamard_quality 30
+
 
 python test_gsm8k.py \
     --model_name_or_path /home/yujin-wa20/projects/LoftQ/model_zoo/loftq/${model_name} \
